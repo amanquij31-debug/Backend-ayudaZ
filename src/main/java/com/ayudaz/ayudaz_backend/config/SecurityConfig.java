@@ -59,7 +59,7 @@ public class SecurityConfig {
         configuration.setAllowedOrigins(List.of(
                 "http://localhost:3000",
                 "http://localhost:5173",
-                "https://ayudaz.netlify.app"
+                "https://ayudaz.netlify.app" // 🔥 PRODUCCIÓN
         ));
 
         configuration.setAllowedMethods(List.of(

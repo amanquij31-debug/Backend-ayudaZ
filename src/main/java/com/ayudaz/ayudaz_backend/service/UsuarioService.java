@@ -21,166 +21,390 @@ public class UsuarioService {
     @Autowired
     private UsuarioRepository usuarioRepository;
 
+
     @Autowired
     private AyudadoRepository ayudadoRepository;
 
-    /**
-     * Registra o actualiza un usuario basado en Firebase UID.
-     * Si el usuario ya existe, actualiza solo el último acceso.
-     * Si no existe, crea uno nuevo con estado pendiente.
-     * @param firebaseUid UID de Firebase
-     * @param email correo electrónico
-     * @param nombre nombre del usuario
-     * @param tipoUsuario "voluntario", "ayudado" o "admin"
-     * @return Usuario guardado
-     */
-    @Transactional
-    public Usuario registrarOActualizarUsuario(String firebaseUid, String email, String nombre, String tipoUsuario) {
-        Optional<Usuario> existing = usuarioRepository.findByFirebaseUid(firebaseUid);
-        Usuario usuario;
-        if (existing.isPresent()) {
-            usuario = existing.get();
-            usuario.setUltimoAcceso(LocalDateTime.now());
-        } else {
-            usuario = new Usuario();
-            usuario.setFirebaseUid(firebaseUid);
-            usuario.setEmail(email);
-            usuario.setNombre(nombre);
-            usuario.setTipoUsuario(TipoUsuario.valueOf(tipoUsuario));
-            usuario.setEstado(EstadoUsuario.pendiente);
-            usuario.setFechaRegistro(LocalDateTime.now());
-        }
-        return usuarioRepository.save(usuario);
-    }
+
 
     /**
-     * Busca un usuario por su Firebase UID.
-     * @param firebaseUid UID de Firebase
-     * @return Optional<Usuario>
+     * Busca usuario por Firebase UID
      */
-    public Optional<Usuario> findByFirebaseUid(String firebaseUid) {
+    public Optional<Usuario> findByFirebaseUid(String firebaseUid){
+
         return usuarioRepository.findByFirebaseUid(firebaseUid);
+
     }
 
 
 
     /**
-     * Obtiene todos los usuarios con estado 'pendiente' (para aprobación del admin).
-     * @return lista de usuarios pendientes
+     * Crea o actualiza usuario desde Firebase
      */
-    public List<Usuario> getUsuariosPendientes() {
-        return usuarioRepository.findByEstado(EstadoUsuario.pendiente);
-    }
-
-    /**
-     * Aprueba un usuario cambiando su estado a 'activo'.
-     * @param usuarioId ID del usuario
-     * @throws RuntimeException si el usuario no existe
-     */
-
     @Transactional
-    public void aprobarUsuario(Long usuarioId) {
-        Usuario usuario = usuarioRepository.findById(usuarioId)
-                .orElseThrow(() -> new RuntimeException("Usuario no encontrado"));
-        usuario.setEstado(EstadoUsuario.activo);
-        usuarioRepository.save(usuario);
+    public synchronized Usuario registrarOActualizarUsuario(
+            String firebaseUid,
+            String email,
+            String nombre,
+            String tipoUsuario
+    ){
 
-        // Si el usuario es ayudado, actualizar los campos en la tabla ayudados
-        if (usuario.getTipoUsuario() == TipoUsuario.ayudado) {
-            Optional<Ayudado> ayudadoOpt = ayudadoRepository.findByUsuarioId(usuarioId);
-            if (ayudadoOpt.isPresent()) {
-                Ayudado ayudado = ayudadoOpt.get();
-                ayudado.setConfirmacionAdmin(true);
-                ayudado.setFechaConfirmacion(LocalDateTime.now());
-                // Opcional: si quieres agregar una observación por defecto o permitir que el admin la envíe
-                // ayudado.setObservaciones("Aprobado por administrador");
-                ayudadoRepository.save(ayudado);
+
+        Optional<Usuario> encontrado =
+                usuarioRepository.findByFirebaseUid(firebaseUid);
+
+
+
+        Usuario usuario;
+
+
+        if(encontrado.isPresent()){
+
+
+            usuario = encontrado.get();
+
+            usuario.setUltimoAcceso(
+                    LocalDateTime.now()
+            );
+
+
+            if(email != null)
+                usuario.setEmail(email);
+
+
+            if(nombre != null)
+                usuario.setNombre(nombre);
+
+
+
+        }else{
+
+
+            usuario = new Usuario();
+
+
+            usuario.setFirebaseUid(firebaseUid);
+
+            usuario.setEmail(email);
+
+            usuario.setNombre(nombre);
+
+
+            usuario.setEstado(
+                    EstadoUsuario.pendiente
+            );
+
+
+            usuario.setFechaRegistro(
+                    LocalDateTime.now()
+            );
+
+
+            if(tipoUsuario != null){
+
+                usuario.setTipoUsuario(
+                        TipoUsuario.valueOf(tipoUsuario)
+                );
+
             }
+
+
         }
-    }
 
-    /**
-     * Elimina un usuario (rechazo) de la base de datos.
-     * @param usuarioId ID del usuario
-     */
-    @Transactional
-    public void eliminarUsuario(Long usuarioId) {
-        usuarioRepository.deleteById(usuarioId);
-    }
 
-    /**
-     * Guarda los datos específicos de un usuario ayudado (nombre cónyuge, integrantes, etc.).
-     * @param usuario el usuario ayudado (debe estar guardado previamente)
-     * @param datosAyudado objeto con los datos extra
-     * @return Ayudado guardado
-     */
-    @Transactional
-    public Ayudado guardarDatosAyudado(Usuario usuario, Ayudado datosAyudado) {
-        datosAyudado.setUsuario(usuario);
-        return ayudadoRepository.save(datosAyudado);
-    }
-
-    /**
-     * Obtiene un usuario por su ID.
-     * @param id ID del usuario
-     * @return Optional<Usuario>
-     */
-    public Optional<Usuario> findById(Long id) {
-        return usuarioRepository.findById(id);
-    }
-
-    public List<Usuario> findAll() {
-        return usuarioRepository.findAll();
-    }
-
-    @Transactional
-    public Usuario crearUsuario(Usuario usuario) {
-        // Asegurar que el usuario no tenga rol asignado
-        usuario.setTipoUsuario(null);
         return usuarioRepository.save(usuario);
+
     }
 
+
+
+
+
     /**
-     * Actualiza un usuario existente (para asignarle rol y otros campos después del registro).
-     * @param usuario objeto Usuario con los datos actualizados (debe tener id)
-     * @return Usuario actualizado
+     * Método general de guardado
+     * evita duplicados por Firebase UID
      */
     @Transactional
-    public Usuario actualizarUsuario(Usuario usuario) {
-        // Verificar que el usuario existe
-        if (!usuarioRepository.existsById(usuario.getId())) {
-            throw new RuntimeException("Usuario no encontrado para actualizar");
+    public synchronized Usuario save(Usuario usuario){
+
+
+        if(usuario.getFirebaseUid()!=null){
+
+
+            Optional<Usuario> existente =
+                    usuarioRepository
+                            .findByFirebaseUid(
+                                    usuario.getFirebaseUid()
+                            );
+
+
+
+            if(existente.isPresent()){
+
+
+                Usuario actual =
+                        existente.get();
+
+
+                usuario.setId(
+                        actual.getId()
+                );
+
+            }
+
         }
+
+
         return usuarioRepository.save(usuario);
+
     }
 
-    /**
-     * Suspende un usuario (cambia su estado a 'rechazado').
-     */
+
+
+
+
+    public List<Usuario> getUsuariosPendientes(){
+
+        return usuarioRepository
+                .findByEstado(
+                        EstadoUsuario.pendiente
+                );
+
+    }
+
+
+
+
     @Transactional
-    public void suspenderUsuario(Long usuarioId) {
-        Usuario usuario = usuarioRepository.findById(usuarioId)
-                .orElseThrow(() -> new RuntimeException("Usuario no encontrado"));
-        usuario.setEstado(EstadoUsuario.rechazado);
+    public void aprobarUsuario(Long usuarioId){
+
+
+        Usuario usuario =
+                usuarioRepository.findById(usuarioId)
+                        .orElseThrow(
+                                ()->new RuntimeException(
+                                        "Usuario no encontrado"
+                                )
+                        );
+
+
+
+        usuario.setEstado(
+                EstadoUsuario.activo
+        );
+
+
         usuarioRepository.save(usuario);
+
+
+
+        if(usuario.getTipoUsuario()
+                == TipoUsuario.ayudado){
+
+
+
+            ayudadoRepository
+                    .findByUsuarioId(usuarioId)
+                    .ifPresent(ayudado -> {
+
+
+                        ayudado.setConfirmacionAdmin(true);
+
+                        ayudado.setFechaConfirmacion(
+                                LocalDateTime.now()
+                        );
+
+
+                        ayudadoRepository.save(ayudado);
+
+
+                    });
+
+        }
+
     }
 
-    /**
-     * Edita un usuario (nombre, email, tipoUsuario, estado).
-     */
+
+
+
     @Transactional
-    public Usuario editarUsuario(Long usuarioId, String nombre, String email, String tipoUsuario, String estado) {
-        Usuario usuario = usuarioRepository.findById(usuarioId)
-                .orElseThrow(() -> new RuntimeException("Usuario no encontrado"));
-        if (nombre != null) usuario.setNombre(nombre);
-        if (email != null) usuario.setEmail(email);
-        if (tipoUsuario != null) usuario.setTipoUsuario(TipoUsuario.valueOf(tipoUsuario));
-        if (estado != null) usuario.setEstado(EstadoUsuario.valueOf(estado));
-        return usuarioRepository.save(usuario);
+    public void eliminarUsuario(Long usuarioId){
+
+        usuarioRepository.deleteById(usuarioId);
+
     }
 
-    public Usuario save(Usuario usuario) {
+
+
+
+    @Transactional
+    public Ayudado guardarDatosAyudado(
+            Usuario usuario,
+            Ayudado datosAyudado
+    ){
+
+        datosAyudado.setUsuario(usuario);
+
+        return ayudadoRepository.save(datosAyudado);
+
+    }
+
+
+
+
+
+    public Optional<Usuario> findById(Long id){
+
+        return usuarioRepository.findById(id);
+
+    }
+
+
+
+
+    public List<Usuario> findAll(){
+
+        return usuarioRepository.findAll();
+
+    }
+
+
+
+
+    @Transactional
+    public Usuario crearUsuario(Usuario usuario){
+
+        usuario.setTipoUsuario(null);
+
+        return save(usuario);
+
+    }
+
+
+
+
+
+    @Transactional
+    public Usuario actualizarUsuario(
+            Usuario usuario
+    ){
+
+
+        if(!usuarioRepository.existsById(usuario.getId())){
+
+            throw new RuntimeException(
+                    "Usuario no encontrado para actualizar"
+            );
+
+        }
+
+
         return usuarioRepository.save(usuario);
+
+    }
+
+
+
+
+
+    @Transactional
+    public void suspenderUsuario(Long usuarioId){
+
+
+        Usuario usuario =
+                usuarioRepository.findById(usuarioId)
+                        .orElseThrow(
+                                ()->new RuntimeException(
+                                        "Usuario no encontrado"
+                                )
+                        );
+
+
+        usuario.setEstado(
+                EstadoUsuario.rechazado
+        );
+
+
+        usuarioRepository.save(usuario);
+
+    }
+
+
+
+
+
+    @Transactional
+    public Usuario editarUsuario(
+            Long usuarioId,
+            String nombre,
+            String email,
+            String tipoUsuario,
+            String estado
+    ){
+
+
+        Usuario usuario =
+                usuarioRepository.findById(usuarioId)
+                        .orElseThrow(
+                                ()->new RuntimeException(
+                                        "Usuario no encontrado"
+                                )
+                        );
+
+
+
+        if(nombre!=null)
+            usuario.setNombre(nombre);
+
+
+
+        if(email!=null)
+            usuario.setEmail(email);
+
+
+
+        if(tipoUsuario!=null)
+            usuario.setTipoUsuario(
+                    TipoUsuario.valueOf(tipoUsuario)
+            );
+
+
+
+        if(estado!=null)
+            usuario.setEstado(
+                    EstadoUsuario.valueOf(estado)
+            );
+
+
+
+        return usuarioRepository.save(usuario);
+
+    }
+
+
+
+
+
+    @Transactional
+    public void activarUsuario(Long usuarioId){
+
+
+        Usuario usuario =
+                usuarioRepository.findById(usuarioId)
+                        .orElseThrow(
+                                ()->new RuntimeException(
+                                        "Usuario no encontrado"
+                                )
+                        );
+
+
+        usuario.setEstado(
+                EstadoUsuario.activo
+        );
+
+
+        usuarioRepository.save(usuario);
+
     }
 
 

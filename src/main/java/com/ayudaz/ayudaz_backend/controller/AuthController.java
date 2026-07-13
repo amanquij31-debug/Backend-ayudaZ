@@ -9,6 +9,7 @@ import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseToken;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDateTime;
@@ -18,144 +19,297 @@ import java.time.LocalDateTime;
 @CrossOrigin(origins = "*")
 public class AuthController {
 
+
     @Autowired
     private UsuarioService usuarioService;
+
 
     @Autowired
     private AyudadoRepository ayudadoRepository;
 
-    // ── /verify ───────────────────────────────────────────────────────────────
-    // Crea el usuario en BD si no existe aún (login social / primera vez)
+
+
+    // ==========================================================
+    // VERIFY FIREBASE
+    // ==========================================================
+
     @PostMapping("/verify")
-    public ResponseEntity<?> verifyToken(@RequestHeader("Authorization") String authHeader) {
+    @Transactional
+    public ResponseEntity<?> verifyToken(
+            @RequestHeader("Authorization") String authHeader
+    ){
+
         try {
-            String token = authHeader.replace("Bearer ", "");
-            FirebaseToken decoded = FirebaseAuth.getInstance().verifyIdToken(token);
 
-            String uid    = decoded.getUid();
-            String email  = decoded.getEmail();
-            String nombre = decoded.getName() != null
-                    ? decoded.getName()
-                    : email.split("@")[0];
 
-            // findOrCreate — nunca hace doble INSERT
-            Usuario usuario = usuarioService.findByFirebaseUid(uid).orElseGet(() -> {
-                Usuario u = new Usuario();
-                u.setFirebaseUid(uid);
-                u.setEmail(email);
-                u.setNombre(nombre);
-                u.setTipoUsuario(null);
-                u.setEstado(EstadoUsuario.pendiente);
-                u.setFechaRegistro(LocalDateTime.now());
-                return usuarioService.save(u);
-            });
+            FirebaseToken decoded = validarFirebase(authHeader);
 
-            // Actualizar último acceso
+
+            Usuario usuario = obtenerOCrearUsuario(decoded);
+
+
+
             usuario.setUltimoAcceso(LocalDateTime.now());
+
             usuarioService.save(usuario);
 
+
+
             return ResponseEntity.ok(usuario);
-        } catch (Exception e) {
-            return ResponseEntity.status(401).body("Token inválido: " + e.getMessage());
+
+
+
+        }catch(Exception e){
+
+            return ResponseEntity
+                    .status(401)
+                    .body("Token inválido: " + e.getMessage());
+
         }
+
     }
 
-    // ── /registro/voluntario ──────────────────────────────────────────────────
+
+
+    // ==========================================================
+    // REGISTRO VOLUNTARIO
+    // ==========================================================
+
+
     @PostMapping("/registro/voluntario")
+    @Transactional
     public ResponseEntity<?> registrarVoluntario(
             @RequestBody RegistroDTO dto,
-            @RequestHeader("Authorization") String authHeader) {
+            @RequestHeader("Authorization") String authHeader
+    ){
 
         try {
 
-            String uid = verificarToken(authHeader);
+            FirebaseToken firebase = validarFirebase(authHeader);
 
-            // Buscar si ya existe el usuario creado por /verify
-            Usuario usuario = usuarioService.findByFirebaseUid(uid)
-                    .orElse(null);
 
-            if (usuario == null) {
+            Usuario usuario = obtenerOCrearUsuario(firebase);
 
-                // Crear nuevo usuario
-                usuario = new Usuario();
-                usuario.setFirebaseUid(uid);
+
+            usuario.setNombre(dto.getNombre());
+
+            // mantener correo de Firebase
+            if(dto.getEmail() != null && !dto.getEmail().isEmpty()){
                 usuario.setEmail(dto.getEmail());
-                usuario.setFechaRegistro(LocalDateTime.now());
-
-            } else {
-
-                // Si existe, actualizar email por seguridad
-                usuario.setEmail(dto.getEmail());
-
             }
 
-            // Datos del voluntario
-            usuario.setNombre(dto.getNombre());
+
             usuario.setTipoUsuario(TipoUsuario.voluntario);
             usuario.setEstado(EstadoUsuario.activo);
             usuario.setUltimoAcceso(LocalDateTime.now());
 
-            usuarioService.save(usuario);
 
-            return ResponseEntity.ok(usuario);
+            Usuario guardado = usuarioService.save(usuario);
 
-        } catch (Exception e) {
+
+            return ResponseEntity.ok(guardado);
+
+
+        } catch(Exception e){
 
             e.printStackTrace();
 
-            return ResponseEntity.badRequest()
-                    .body("Error al registrar voluntario: " + e.getMessage());
-
+            return ResponseEntity
+                    .badRequest()
+                    .body(
+                            "Error al registrar voluntario: "
+                                    + e.getMessage()
+                    );
         }
     }
 
-    // ── /registro/ayudado ─────────────────────────────────────────────────────
+
+
+    // ==========================================================
+    // REGISTRO AYUDADO
+    // ==========================================================
+
+
+    @Transactional
     @PostMapping("/registro/ayudado")
     public ResponseEntity<?> registrarAyudado(
             @RequestBody AyudadoRegistroDTO dto,
             @RequestHeader("Authorization") String authHeader) {
+
         try {
+
             String uid = verificarToken(authHeader);
 
-            // ── 1. Upsert usuario ────────────────────────────────────────────
-            // findByFirebaseUid devuelve el existente (creado por /verify)
-            // orElseGet crea uno nuevo solo si realmente no existe
-            Usuario usuario = usuarioService.findByFirebaseUid(uid).orElseGet(Usuario::new);
-            usuario.setFirebaseUid(uid);
+
+            // Buscar usuario creado por /verify
+            Usuario usuario = usuarioService.findByFirebaseUid(uid)
+                    .orElseThrow(() ->
+                            new RuntimeException(
+                                    "Usuario no encontrado. Primero debe ejecutar verify"
+                            )
+                    );
+
+
+            // Solo actualizar datos del usuario existente
             usuario.setNombre(dto.getNombre());
+            usuario.setEmail(dto.getEmail());
             usuario.setTipoUsuario(TipoUsuario.ayudado);
             usuario.setEstado(EstadoUsuario.pendiente);
-            if (usuario.getId() == null) {
-                // Solo setear estos campos si es un usuario completamente nuevo
-                usuario.setEmail(dto.getEmail());
-                usuario.setFechaRegistro(LocalDateTime.now());
-            }
+            usuario.setUltimoAcceso(LocalDateTime.now());
+
+
             usuario = usuarioService.save(usuario);
 
-            // ── 2. Crear perfil ayudado (solo si no existe ya) ───────────────
-            // Evita duplicado si el endpoint se llama dos veces
+
+
+            // Crear perfil ayudado
             Ayudado ayudado = ayudadoRepository
                     .findByUsuarioId(usuario.getId())
-                    .orElseGet(Ayudado::new);
+                    .orElse(new Ayudado());
+
 
             ayudado.setUsuario(usuario);
-            ayudado.setDni(dto.getDni());                                      // ← nuevo
-            ayudado.setNombreConyuge(dto.getNombreConyuge());
-            ayudado.setFechaNacimientoConyuge(dto.getFechaNacimientoConyuge());
-            ayudado.setLugarNacimientoConyuge(dto.getLugarNacimientoConyuge());
-            ayudado.setCantidadIntegrantes(dto.getCantidadIntegrantes());
+
+            ayudado.setDni(dto.getDni());
+
+            ayudado.setNombreConyuge(
+                    dto.getNombreConyuge()
+            );
+
+            ayudado.setFechaNacimientoConyuge(
+                    dto.getFechaNacimientoConyuge()
+            );
+
+            ayudado.setLugarNacimientoConyuge(
+                    dto.getLugarNacimientoConyuge()
+            );
+
+            ayudado.setCantidadIntegrantes(
+                    dto.getCantidadIntegrantes()
+            );
+
+
+            ayudado.setConfirmacionAdmin(false);
+
+
             ayudadoRepository.save(ayudado);
 
-            return ResponseEntity.ok("Ayudado registrado. Pendiente de aprobación.");
-        } catch (Exception e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+
+
+            return ResponseEntity.ok(
+                    "Solicitud enviada correctamente. Pendiente de revisión."
+            );
+
+
+        } catch(Exception e){
+
+            e.printStackTrace();
+
+            return ResponseEntity.badRequest()
+                    .body(
+                            "Error al registrar ayudado: "
+                                    + e.getMessage()
+                    );
         }
     }
 
-    // ── Helper: extrae y verifica el token, devuelve el UID ──────────────────
+
+    // ==========================================================
+    // CREA O BUSCA USUARIO
+    // ==========================================================
+
+
+    private synchronized Usuario obtenerOCrearUsuario(
+            FirebaseToken firebase
+    ){
+
+        String uid = firebase.getUid();
+
+        return usuarioService
+                .findByFirebaseUid(uid)
+                .orElseGet(() -> {
+
+
+                    Usuario nuevo = new Usuario();
+
+
+                    nuevo.setFirebaseUid(uid);
+
+                    nuevo.setEmail(firebase.getEmail());
+
+                    nuevo.setNombre(
+                            firebase.getName()!=null
+                                    ?
+                                    firebase.getName()
+                                    :
+                                    firebase.getEmail()
+                                            .split("@")[0]
+                    );
+
+
+                    nuevo.setEstado(
+                            EstadoUsuario.pendiente
+                    );
+
+
+                    nuevo.setFechaRegistro(
+                            LocalDateTime.now()
+                    );
+
+
+                    return usuarioService.save(nuevo);
+
+
+                });
+
+    }
+
+
+
+    // ==========================================================
+    // VALIDAR FIREBASE TOKEN
+    // ==========================================================
+
+
+    private FirebaseToken validarFirebase(
+            String authHeader
+    ) throws Exception{
+
+
+        if(authHeader==null ||
+                !authHeader.startsWith("Bearer ")){
+
+            throw new Exception(
+                    "Token no enviado"
+            );
+
+        }
+
+
+        String token =
+                authHeader.substring(7);
+
+
+
+        return FirebaseAuth
+                .getInstance()
+                .verifyIdToken(token);
+
+    }
+
+    // ── Helper: verifica token Firebase y devuelve UID ─────────────────────
     private String verificarToken(String authHeader) throws Exception {
+
+        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+            throw new RuntimeException("Token no enviado");
+        }
+
         String token = authHeader.replace("Bearer ", "");
-        FirebaseToken decoded = FirebaseAuth.getInstance().verifyIdToken(token);
+
+        FirebaseToken decoded =
+                FirebaseAuth.getInstance()
+                        .verifyIdToken(token);
+
         return decoded.getUid();
     }
 }

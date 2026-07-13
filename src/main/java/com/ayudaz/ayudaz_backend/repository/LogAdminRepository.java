@@ -18,6 +18,8 @@ public interface LogAdminRepository extends JpaRepository<LogAdmin, Long> {
     );
 
     List<LogAdmin> findByAccion(String accion);
+
+    List<LogAdmin> findAllByOrderByFechaDesc();
 }
 
 

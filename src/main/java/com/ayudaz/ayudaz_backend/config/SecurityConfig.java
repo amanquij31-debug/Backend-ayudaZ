@@ -2,6 +2,7 @@ package com.ayudaz.ayudaz_backend.config;
 
 import com.ayudaz.ayudaz_backend.security.FirebaseFilter;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -24,6 +25,12 @@ public class SecurityConfig {
 
     @Autowired
     private FirebaseFilter firebaseFilter;
+
+    // Orígenes permitidos para CORS, separados por coma, leídos de la variable
+    // de entorno CORS_ALLOWED_ORIGINS. Incluye por defecto localhost para
+    // desarrollo local.
+    @Value("${cors.allowed.origins:http://localhost:3000,http://localhost:5173}")
+    private String allowedOriginsProp;
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
@@ -56,11 +63,13 @@ public class SecurityConfig {
 
         CorsConfiguration configuration = new CorsConfiguration();
 
-        configuration.setAllowedOrigins(List.of(
-                "http://localhost:3000",
-                "http://localhost:5173",
-                "https://ayudaz.netlify.app" // 🔥 PRODUCCIÓN
-        ));
+        List<String> allowedOrigins = List.of(allowedOriginsProp.split(","))
+                .stream()
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .toList();
+
+        configuration.setAllowedOrigins(allowedOrigins);
 
         configuration.setAllowedMethods(List.of(
                 "GET",
